@@ -70,11 +70,11 @@ class HTML:
 
                         td(f'Mean_IoU_{domain} : {seg_resuts[f"Mean_IoU_{domain}"]}')
                         td(f'PixelAcc_{domain} : {seg_resuts[f"Pixel_Accuracy_{domain}"]}')
-                        td(f'Val Loss_{domain} : {seg_resuts[f"val_loss_{domain}"]}')
+                        # td(f'Val Loss_{domain} : {seg_resuts[f"val_loss_{domain}"]}')
                     else:
                         td(f'Mean_IoU : {seg_resuts["Mean_IoU"]}')
                         td(f'PixelAcc : {seg_resuts["Pixel_Accuracy"]}')
-                        td(f'Val Loss : {seg_resuts["val_loss"]}')
+                        # td(f'Val Loss : {seg_resuts["val_loss"]}')
 
 
     def save(self):

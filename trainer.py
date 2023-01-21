@@ -1,3 +1,5 @@
+import logging
+import os
 import torch
 import time, random, cv2, sys 
 from math import ceil
@@ -13,6 +15,7 @@ from utils.metrics import eval_metrics, AverageMeter, ConfuseMatrixMeter
 from tqdm import tqdm
 from PIL import Image
 from utils.helpers import DeNormalize
+from utils import setup_logger
 import torch.nn as nn
 from models.decoders import MainDecoder
 
@@ -35,7 +38,7 @@ class Trainer(BaseTrainer):
 
         self.num_classes = self.val_loader.dataset.num_classes
         self.mode = self.model.mode
-
+        self.training = False
         # TRANSORMS FOR VISUALIZATION
         self.restore_transform = transforms.Compose([
             DeNormalize(self.val_loader.MEAN, self.val_loader.STD),
@@ -48,9 +51,21 @@ class Trainer(BaseTrainer):
         self.sup_running_metric = ConfuseMatrixMeter(n_class=2)
         self.unsup_running_metric = ConfuseMatrixMeter(n_class=2)
 
+        setup_logger(None, os.path.join(config['trainer']['log_dir'], config['experim_name'], 'logs'),
+                        'train', level=logging.INFO, screen=False)
+        self.train_logger = logging.getLogger('base')
         self.start_time = time.time()
         
-        
+    # Rest all the performance metrics
+    def _clear_cache(self):
+        self.sup_running_metric.clear()
+        self.unsup_running_metric.clear()  
+    
+    def train_mode(self):
+        self.training = True
+    def eval_mode(self):
+        self.training = False
+          
     # Functions related to computing performance metrics for CD
     def _update_metric(self, pred_l, target_l, pred_ul=None, target_ul=None):
         """
@@ -60,7 +75,7 @@ class Trainer(BaseTrainer):
         Gl_pred = torch.argmax(Gl_pred, dim=1)
 
         sup_current_score = self.sup_running_metric.update_cm(pr=Gl_pred.cpu().numpy(), gt=target_l.detach().cpu().numpy())
-        if self.mode == 'semi' and pred_ul:
+        if self.mode == 'semi' and pred_ul is not None:
             Gul_pred = pred_ul.detach()
             Gul_pred = torch.argmax(Gul_pred, dim=1)
 
@@ -77,7 +92,7 @@ class Trainer(BaseTrainer):
 
         for k, v in sup_scores.items():
             logs['sup_'+k] = v
-        if self.mode=='semi':
+        if self.mode=='semi' and self.training:
             unsup_scores = self.unsup_running_metric.get_scores()
             unsup_epoch_acc = unsup_scores['mf1']
             logs['unsup_epoch_acc'] = unsup_epoch_acc.item()
@@ -88,7 +103,9 @@ class Trainer(BaseTrainer):
         return logs
 
     def _train_epoch(self, epoch):
+        self.train_mode()
         lr = self.optimizer.param_groups[0]['lr']
+        self._clear_cache()
         message = 'lr: %0.7f\n \n' % self.optimizer.param_groups[0]['lr']
         self.logger.info(message)
         self.html_results.save()
@@ -124,7 +141,7 @@ class Trainer(BaseTrainer):
             if self.mode == 'supervised':
                 self._update_metric(outputs['sup_pred'], target_l)
             else:
-                self._update_metric(outputs['unsup_pred'], target_ul)
+                self._update_metric(outputs['sup_pred'], target_l, outputs['unsup_pred'], target_ul)
             self._update_losses(cur_losses)
             self._compute_metrics(outputs, target_l, target_ul, epoch-1)
             logs = self._log_values(cur_losses)
@@ -147,7 +164,7 @@ class Trainer(BaseTrainer):
                 epoch, self.loss_sup.average, self.loss_unsup.average, self.loss_weakly.average,
                 self.pair_wise.average, self.class_iou_l[1], self.class_iou_ul[1]))
 
-            self.lr_scheduler.step()
+            self.lr_scheduler.step(epoch=epoch)
         
         logs = self._collect_epoch_states(logs)
         message = '[Training SemiCD (epoch summary)]: epoch: [%d/%d]. epoch_mF1_sup=%.5f,  epoch_mF1_unsup=%.5f \n' %\
@@ -182,6 +199,8 @@ class Trainer(BaseTrainer):
 
 
     def _valid_epoch(self, epoch):
+        self.eval_mode()
+        self._clear_cache()
         if self.val_loader is None:
             self.logger.warning('Not data loader was passed for the validation step, No validation is performed !')
             return {}
@@ -227,8 +246,9 @@ class Trainer(BaseTrainer):
                 pixAcc = 1.0 * total_correct / (np.spacing(1) + total_label)
                 IoU = 1.0 * total_inter / (np.spacing(1) + total_union)
                 mIoU = IoU.mean()
-                seg_metrics = {"Pixel_Accuracy": np.round(pixAcc, 3), "Mean_IoU": np.round(mIoU, 3),
-                                "Class_IoU": dict(zip(range(self.num_classes), np.round(IoU, 3)))}
+                seg_metrics = {"Pixel_Accuracy": np.round(pixAcc, 5), "Mean_IoU": np.round(mIoU, 5),
+                                "Class_IoU_0":  np.round(IoU[0], 5),
+                                "Class_IoU_1": np.round(IoU[1], 5)}
 
                 tbar.set_description('EVAL ({}) | Loss: {:.3f}, PixelAcc: {:.2f}, IoU(no-change): {:.2f}, IoU(change): {:.2f} |'.format( epoch,
                                                 total_loss_val.average, pixAcc, IoU[0], IoU[1]))
@@ -243,16 +263,17 @@ class Trainer(BaseTrainer):
             for k, v in list(seg_metrics.items())[:-1]: 
                 self.writer.add_scalar(f'{self.wrt_mode}/{k}', v, self.wrt_step)
 
-            log = {
+            logs = {
                 'val_loss': total_loss_val.average,
                 **seg_metrics
             }
-            self.html_results.add_results(epoch=epoch, seg_resuts=log)
-            self.html_results.save()
+            
 
             if (time.time() - self.start_time) / 3600 > 22:
                 self._save_checkpoint(epoch, save_best=self.improved)
         logs = self._collect_epoch_states(logs)
+        self.html_results.add_results(epoch=epoch, seg_resuts=logs)
+        self.html_results.save()
         message = '[Validation CD (epoch summary)]: epoch: [%d/%d]. epoch_mF1=%.5f \n' %\
                       (epoch, epoch-1, logs['sup_epoch_acc'])
         for k, v in logs.items():
@@ -270,7 +291,7 @@ class Trainer(BaseTrainer):
                         'validation/no-change-IoU': logs['sup_iou_0'],
                         'validation/val_step': epoch               
                     })
-        return log
+        return logs
 
 
 
@@ -338,9 +359,9 @@ class Trainer(BaseTrainer):
             IoU = 1.0 * self.total_inter_ul / (np.spacing(1) + self.total_union_ul)
         mIoU = IoU.mean()
         return {
-            "Pixel_Accuracy": np.round(pixAcc, 3),
-            "Mean_IoU": np.round(mIoU, 3),
-            "Class_IoU": dict(zip(range(self.num_classes), np.round(IoU, 3)))
+            "Pixel_Accuracy": np.round(pixAcc, 5),
+            "Mean_IoU": np.round(mIoU, 5),
+            "Class_IoU": dict(zip(range(self.num_classes), np.round(IoU, 5)))
         }
 
 
@@ -412,12 +433,12 @@ class Trainer(BaseTrainer):
         gen_path = os.path.join(
             self.checkpoint_dir, 'E{}_gen.pth'.format(epoch))
         opt_path = os.path.join(
-            self.opt['path']['checkpoint'], 'E{}_opt.pth'.format(epoch))
+            self.checkpoint_dir, 'E{}_opt.pth'.format(epoch))
         if save_best:
             best_gen_path = os.path.join(
                 self.checkpoint_dir, 'best_model_gen.pth')
             best_opt_path = os.path.join(
-                self.opt['path']['checkpoint'], 'best_model_opt.pth')
+                self.checkpoint_dir, 'best_model_opt.pth')
         self.logger.info(f'\nSaving a checkpoint in: {gen_path} ...') 
         torch.save(state, gen_path)
         # Save CD optimizer paramers
@@ -429,7 +450,7 @@ class Trainer(BaseTrainer):
             # filename = os.path.join(self.checkpoint_dir, f'best_model.pth')
             torch.save(state, best_gen_path)
             torch.save(state, best_opt_path)
-            self.logger.info("Saving current in: {best_gen_path}")
+            self.logger.info(f"Saving current in: {best_gen_path} ...")
 
     def _resume_checkpoint(self, resume_path):
         self.logger.info(f'Loading checkpoint from: {resume_path}')
@@ -445,7 +466,7 @@ class Trainer(BaseTrainer):
         except Exception as e:
             print(f'Error when loading: {e}')
             self.model.load_state_dict(checkpoint['state_dict'], strict=False)
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        
         if "logger" in checkpoint.keys():
             self.train_logger = checkpoint['logger']
             

@@ -2,7 +2,7 @@ import os, json, math, logging, sys, datetime
 import torch
 from torch.utils import tensorboard
 from utils import helpers
-from utils import logger
+from utils import logger, setup_logger
 import utils.lr_scheduler
 from utils.htmlwriter import HTML
 
@@ -15,9 +15,10 @@ class BaseTrainer:
         self.config = config
 
         self.train_logger = train_logger
+        
         self.logger = logging.getLogger(self.__class__.__name__)
         self.do_validation = self.config['trainer']['val']
-        self.start_epoch = 1
+        self.start_epoch = 0
         self.improved = False
 
         # SETTING THE DEVICE
@@ -59,7 +60,7 @@ class BaseTrainer:
         run_name = config['experim_name']
         self.checkpoint_dir = os.path.join(cfg_trainer['save_dir'], run_name, 'checkpoints')
         helpers.dir_exists(self.checkpoint_dir)
-        config_save_path = os.path.join(self.checkpoint_dir, 'config.json')
+        config_save_path = os.path.join(cfg_trainer['save_dir'], run_name, 'config.json')
         with open(config_save_path, 'w') as handle:
             json.dump(self.config, handle, indent=4, sort_keys=True)
          
@@ -68,17 +69,21 @@ class BaseTrainer:
         self.html_results = HTML(web_dir=os.path.join(config['trainer']['save_dir'], run_name), exp_name=config['experim_name'],
                             save_name=config['experim_name'], config=config, resume=resume)
 
+        # setup_logger(None, os.path.join(config['trainer']['log_dir'], config['experim_name'], 'logs'),
+        #                 'train', level=logging.INFO, screen=True)
+        # self.train_logger = logging.getLogger('base')
         if resume: self._resume_checkpoint(resume)
 
     def _get_available_devices(self, gpu_ids):
-        sys_gpu = torch.cuda.device_count()
+        # sys_gpu = torch.cuda.device_count()
         n_gpu = len(gpu_ids)
-        if sys_gpu == 0:
-            self.logger.warning('No GPUs detected, using the CPU')
-            n_gpu = 0
-        elif n_gpu > sys_gpu:
-            self.logger.warning(f'Nbr of GPU requested is {n_gpu} but only {sys_gpu} are available')
-            n_gpu = sys_gpu
+        # if sys_gpu == 0:
+        #     self.logger.warning('No GPUs detected, using the CPU')
+        #     n_gpu = 0
+        # elif n_gpu > sys_gpu:
+        #     self.logger.warning(f'Nbr of GPU requested is {n_gpu} but only {sys_gpu} are available')
+        #     n_gpu = sys_gpu
+        # gpu_list = [int(x) for x in self.config['gpu_ids']]
         gpu_list = ','.join(str(x) for x in self.config['gpu_ids'])
         os.environ['CUDA_VISIBLE_DEVICES'] = gpu_list
         device = torch.device('cuda' if n_gpu > 0 else 'cpu')
@@ -89,7 +94,7 @@ class BaseTrainer:
 
 
     def train(self):
-        for epoch in range(self.start_epoch, self.epochs+1):
+        for epoch in range(self.start_epoch, self.epochs):
             results = self._train_epoch(epoch)
             if self.do_validation and epoch % self.config['trainer']['val_per_epochs'] == 0:
                 results = self._valid_epoch(epoch)
@@ -99,7 +104,7 @@ class BaseTrainer:
             
             if self.train_logger is not None:
                 log = {'epoch' : epoch, **results}
-                self.train_logger.add_entry(log)
+                # self.train_logger.add_entry(log)
 
             # CHECKING IF THIS IS THE BEST MODEL (ONLY FOR VAL)
             if self.mnt_mode != 'off' and epoch % self.config['trainer']['val_per_epochs'] == 0:
@@ -148,7 +153,7 @@ class BaseTrainer:
     def _resume_checkpoint(self, resume_path):
         self.logger.info(f'Loading checkpoint : {resume_path}')
         checkpoint = torch.load(resume_path)
-        self.start_epoch = checkpoint['epoch'] + 1
+        self.start_epoch = checkpoint['epoch']+1
         self.mnt_best = checkpoint['monitor_best']
         self.not_improved_count = 0
 
