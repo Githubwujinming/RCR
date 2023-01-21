@@ -57,15 +57,15 @@ class BaseTrainer:
         # CHECKPOINTS & TENSOBOARD
         date_time = datetime.datetime.now().strftime('%m-%d_%H-%M')
         run_name = config['experim_name']
-        self.checkpoint_dir = os.path.join(cfg_trainer['save_dir'], run_name)
+        self.checkpoint_dir = os.path.join(cfg_trainer['save_dir'], run_name, 'checkpoints')
         helpers.dir_exists(self.checkpoint_dir)
         config_save_path = os.path.join(self.checkpoint_dir, 'config.json')
         with open(config_save_path, 'w') as handle:
             json.dump(self.config, handle, indent=4, sort_keys=True)
          
-        writer_dir = os.path.join(cfg_trainer['log_dir'], run_name)
+        writer_dir = os.path.join(cfg_trainer['log_dir'], run_name, 'logs')
         self.writer = tensorboard.SummaryWriter(writer_dir)
-        self.html_results = HTML(web_dir=config['trainer']['save_dir'], exp_name=config['experim_name'],
+        self.html_results = HTML(web_dir=os.path.join(config['trainer']['save_dir'], run_name), exp_name=config['experim_name'],
                             save_name=config['experim_name'], config=config, resume=resume)
 
         if resume: self._resume_checkpoint(resume)
