@@ -9,7 +9,7 @@ from torchvision.utils import make_grid
 from torchvision import transforms
 from base import BaseTrainer
 from utils.helpers import colorize_mask
-from utils.metrics import eval_metrics, AverageMeter
+from utils.metrics import eval_metrics, AverageMeter, ConfuseMatrixMeter
 from tqdm import tqdm
 from PIL import Image
 from utils.helpers import DeNormalize
@@ -19,9 +19,10 @@ from models.decoders import MainDecoder
 
 class Trainer(BaseTrainer):
     def __init__(self, model, resume, config, supervised_loader, unsupervised_loader, iter_per_epoch,
-                val_loader=None, train_logger=None):
+                val_loader=None, train_logger=None, wandb_logger=None):
         super(Trainer, self).__init__(model, resume, config, iter_per_epoch, train_logger)
         
+        self.wandb_logger = wandb_logger
         self.supervised_loader = supervised_loader
         self.unsupervised_loader = unsupervised_loader
         self.val_loader = val_loader
@@ -42,12 +43,54 @@ class Trainer(BaseTrainer):
         self.viz_transform = transforms.Compose([
             transforms.Resize((400, 400)),
             transforms.ToTensor()])
+        
+        # semi cd settings
+        self.sup_running_metric = ConfuseMatrixMeter(n_class=2)
+        self.unsup_running_metric = ConfuseMatrixMeter(n_class=2)
 
         self.start_time = time.time()
+        
+        
+    # Functions related to computing performance metrics for CD
+    def _update_metric(self, pred_l, target_l, pred_ul=None, target_ul=None):
+        """
+        update metric
+        """
+        Gl_pred = pred_l.detach()
+        Gl_pred = torch.argmax(Gl_pred, dim=1)
 
+        sup_current_score = self.sup_running_metric.update_cm(pr=Gl_pred.cpu().numpy(), gt=target_l.detach().cpu().numpy())
+        if self.mode == 'semi' and pred_ul:
+            Gul_pred = pred_ul.detach()
+            Gul_pred = torch.argmax(Gul_pred, dim=1)
 
+            unsup_current_score = self.unsup_running_metric.update_cm(pr=Gul_pred.cpu().numpy(), gt=target_ul.detach().cpu().numpy())
+            return sup_current_score, unsup_current_score
+        return sup_current_score
+
+    # Collect the status of the epoch
+    def _collect_epoch_states(self, logs):
+        sup_scores = self.sup_running_metric.get_scores()
+        self.sup_epoch_acc = sup_scores['mf1']
+
+        logs['sup_epoch_acc'] = self.sup_epoch_acc.item()
+
+        for k, v in sup_scores.items():
+            logs['sup_'+k] = v
+        if self.mode=='semi':
+            unsup_scores = self.unsup_running_metric.get_scores()
+            unsup_epoch_acc = unsup_scores['mf1']
+            logs['unsup_epoch_acc'] = unsup_epoch_acc.item()
+            for k, v in unsup_scores.items():
+                logs['unsup_'+k] = v
+                #message += '%s: %.5f ' % (k, v)
+                
+        return logs
 
     def _train_epoch(self, epoch):
+        lr = self.optimizer.param_groups[0]['lr']
+        message = 'lr: %0.7f\n \n' % self.optimizer.param_groups[0]['lr']
+        self.logger.info(message)
         self.html_results.save()
         
         self.logger.info('\n')
@@ -77,7 +120,11 @@ class Trainer(BaseTrainer):
             total_loss = total_loss.mean()
             total_loss.backward()
             self.optimizer.step()
-                
+            
+            if self.mode == 'supervised':
+                self._update_metric(outputs['sup_pred'], target_l)
+            else:
+                self._update_metric(outputs['unsup_pred'], target_ul)
             self._update_losses(cur_losses)
             self._compute_metrics(outputs, target_l, target_ul, epoch-1)
             logs = self._log_values(cur_losses)
@@ -102,7 +149,35 @@ class Trainer(BaseTrainer):
                 self.pair_wise.average, self.class_iou_l[1], self.class_iou_ul[1]))
 
             self.lr_scheduler.step(epoch=epoch-1)
-
+        
+        logs = self._collect_epoch_states(logs)
+        message = '[Training SemiCD (epoch summary)]: epoch: [%d/%d]. epoch_mF1_sup=%.5f,  epoch_mF1_unsup=%.5f \n' %\
+                      (epoch, epoch-1, logs['sup_epoch_acc'], logs['unsup_epoch_acc'])
+        for k, v in logs.items():
+            message += '{:s}: {:.4e} '.format(k, v)
+        message += '\n'
+        self.logger.info(message)
+        if self.wandb_logger:
+            self.wandb_logger.log_metrics({
+                                'training/lr': lr,
+                                'training/sup_mF1': logs['sup_epoch_acc'],
+                                'training/sup_mIoU': logs['sup_miou'],
+                                'training/sup_OA': logs['sup_acc'],
+                                'training/sup_change-F1': logs['sup_F1_1'],
+                                'training/sup_no-change-F1': logs['sup_F1_0'],
+                                'training/sup_change-IoU': logs['sup_iou_1'],
+                                'training/sup_no-change-IoU': logs['sup_iou_0'],
+                                
+                                'training/unsup_mF1': logs['unsup_epoch_acc'],
+                                'training/unsup_mIoU': logs['unsup_miou'],
+                                'training/unsup_OA': logs['unsup_acc'],
+                                'training/unsup_change-F1': logs['unsup_F1_1'],
+                                'training/unsup_no-change-F1': logs['unsup_F1_0'],
+                                'training/unsup_change-IoU': logs['unsup_iou_1'],
+                                'training/unsup_no-change-IoU': logs['unsup_iou_0'],
+                        
+                                'training/train_step': epoch
+                            })
         return logs
 
 
@@ -132,7 +207,7 @@ class Trainer(BaseTrainer):
                 B = F.pad(B, pad=(0, pad_w, 0, pad_h), mode='reflect')
                 output = self.model(A_l=A, B_l=B)
                 output = output[:, :, :H, :W]
-                
+                self._update_metric(output, target)
                 # LOSS
                 loss = F.cross_entropy(output, target)
                 total_loss_val.update(loss.item())
@@ -178,6 +253,24 @@ class Trainer(BaseTrainer):
 
             if (time.time() - self.start_time) / 3600 > 22:
                 self._save_checkpoint(epoch, save_best=self.improved)
+        logs = self._collect_epoch_states(logs)
+        message = '[Validation CD (epoch summary)]: epoch: [%d/%d]. epoch_mF1=%.5f \n' %\
+                      (epoch, epoch-1, logs['sup_epoch_acc'])
+        for k, v in logs.items():
+            message += '{:s}: {:.4e} '.format(k, v) 
+        message += '\n'
+        self.logger.info(message)
+        if self.wandb_logger:
+                    self.wandb_logger.log_metrics({
+                        'validation/mF1': logs['sup_epoch_acc'],
+                        'validation/mIoU': logs['sup_miou'],
+                        'validation/OA': logs['sup_acc'],
+                        'validation/change-F1': logs['sup_F1_1'],
+                        'validation/no-change-F1': logs['sup_F1_0'],
+                        'validation/change-IoU': logs['sup_iou_1'],
+                        'validation/no-change-IoU': logs['sup_iou_0'],
+                        'validation/val_step': epoch               
+                    })
         return log
 
 
@@ -308,3 +401,57 @@ class Trainer(BaseTrainer):
             imgs = [[i.data.cpu(), j.data.cpu(), k, l] for i, j, k, l in zip(A_ul, B_ul, outputs_ul_np, targets_ul_np)]
             self._add_img_tb(imgs, 'unsupervised')
 
+    
+    def _save_checkpoint(self, epoch, save_best=False):
+        state = {
+            'arch': type(self.model).__name__,
+            'epoch': epoch,
+            'state_dict': self.model.state_dict(),
+            'monitor_best': self.mnt_best,
+            'config': self.config
+        }
+        gen_path = os.path.join(
+            self.checkpoint_dir, 'E{}_gen.pth'.format(epoch))
+        opt_path = os.path.join(
+            self.opt['path']['checkpoint'], 'E{}_opt.pth'.format(epoch))
+        if save_best:
+            best_gen_path = os.path.join(
+                self.checkpoint_dir, 'best_model_gen.pth')
+            best_opt_path = os.path.join(
+                self.opt['path']['checkpoint'], 'best_model_opt.pth')
+        self.logger.info(f'\nSaving a checkpoint in: {gen_path} ...') 
+        torch.save(state, gen_path)
+        # Save CD optimizer paramers
+        opt_state = {'scheduler': None, 
+                     'optimizer': None}
+        opt_state['optimizer'] = self.optimizer.state_dict()
+        torch.save(opt_state, opt_path)
+        if save_best:
+            # filename = os.path.join(self.checkpoint_dir, f'best_model.pth')
+            torch.save(state, best_gen_path)
+            torch.save(state, best_opt_path)
+            self.logger.info("Saving current in: {best_gen_path}")
+
+    def _resume_checkpoint(self, resume_path):
+        self.logger.info(f'Loading checkpoint from: {resume_path}')
+        gen_path = '{}_gen.pth'.format(resume_path)
+        opt_path = '{}_opt.pth'.format(resume_path)
+        checkpoint = torch.load(gen_path)
+        self.start_epoch = checkpoint['epoch'] + 1
+        self.mnt_best = checkpoint['monitor_best']
+        self.not_improved_count = 0
+
+        try:
+            self.model.load_state_dict(checkpoint['state_dict'])
+        except Exception as e:
+            print(f'Error when loading: {e}')
+            self.model.load_state_dict(checkpoint['state_dict'], strict=False)
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+        if "logger" in checkpoint.keys():
+            self.train_logger = checkpoint['logger']
+            
+        # if self.opt['phase'] == 'train':
+        opt = torch.load(opt_path)
+        self.optimizer.load_state_dict(opt['optimizer'])
+        # self.begin_step = opt['iter']
+        self.logger.info(f'Checkpoint <{resume_path}> (epoch {self.start_epoch}) was loaded')
