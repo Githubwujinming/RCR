@@ -115,10 +115,10 @@ class Trainer(BaseTrainer):
 
         if self.mode == 'supervised':
             dataloader = iter(self.supervised_loader)
-            tbar = tqdm(range(len(self.supervised_loader)), ncols=100)
+            tbar = tqdm(range(len(self.supervised_loader)), ncols=150)
         else:
             dataloader = iter(zip(cycle(self.supervised_loader), self.unsupervised_loader))
-            tbar = tqdm(range(len(self.unsupervised_loader)), ncols=100)
+            tbar = tqdm(range(len(self.unsupervised_loader)), ncols=150)
 
         self._reset_metrics()
         for batch_idx in tbar:
