@@ -1,4 +1,5 @@
 import argparse
+import logging
 import scipy, math
 from scipy import ndimage
 import cv2
@@ -7,7 +8,8 @@ import sys
 import json
 import models
 import dataloaders
-from utils.helpers import colorize_mask
+from utils.helpers import colorize_mask, dir_exists
+from utils.logger import setup_logger
 from utils.pallete import get_voc_pallete
 from utils import metrics
 import torch
@@ -64,7 +66,7 @@ def _update_metric(pred_l, target_l, sup_running_metric):
     """
     update metric
     """
-    Gl_pred = np.argmax(Gl_pred, dim=0)
+    Gl_pred = torch.argmax(pred_l, 1)
 
     sup_current_score = sup_running_metric.update_cm(pr=Gl_pred.cpu().numpy(), gt=target_l.detach().cpu().numpy())
     
@@ -93,12 +95,12 @@ def main():
     sup_running_metric = metrics.ConfuseMatrixMeter(n_class=num_classes)
 
     # DATA LOADER
-    config['val_loader']["batch_size"]  = 1
-    config['val_loader']["num_workers"] = 1
-    config['val_loader']["split"]       = "test"
-    config['val_loader']["shuffle"]     = False
-    config['val_loader']['data_dir']    = args.Dataset_Path
-    loader = dataloaders.CDDataset(config['val_loader'])
+    # config['val_loader']["batch_size"]  = 1
+    # config['val_loader']["num_workers"] = 1
+    # config['val_loader']["split"]       = "test"
+    # config['val_loader']["shuffle"]     = False
+    # config['val_loader']['data_dir']    = args.Dataset_Path
+    loader = dataloaders.CDDataset(config['test_loader'])
     palette     = get_voc_pallete(num_classes)
 
     # MODEL
@@ -106,7 +108,9 @@ def main():
     config['model']['semi'] = False
     model = models.Consistency_ResNet50_CD(num_classes=num_classes, conf=config['model'], testing=True)
     print(f'\n{model}\n')
-    checkpoint = torch.load(args.model)
+    assert config["resume_path"] is not None, "resume_path in config must not None"
+        
+    checkpoint = torch.load(config["resume_path"]+'_gen.pth')
     # model = torch.nn.DataParallel(model)
     try:
         print("Loading the state dictionery...")
@@ -121,68 +125,81 @@ def main():
         os.makedirs('outputs')
     
     #Set HTML
-    web_dir = '/media/lidan/ssd2/SemiCD/outputs/'+config["experim_name"]
+    web_dir = os.path.join(config["trainer"]["save_dir"],config["experim_name"], 'web')
     html_results = HTML(web_dir=web_dir, exp_name=config['experim_name']+"--Test--",
                             save_name=config['experim_name'], config=config)
-
+    imgs_dir = os.path.join(config["trainer"]["save_dir"],config["experim_name"],'images')
+    dir_exists(imgs_dir)
     # LOOP OVER THE DATA
     tbar = tqdm(loader, ncols=100)
     total_inter, total_union = 0, 0
     total_correct, total_label = 0, 0
-
+    setup_logger('test', os.path.join(config['trainer']['log_dir'], config['experim_name'], 'logs'),
+                        'test', level=logging.INFO, screen=False)
+    test_logger = logging.getLogger('test')
+    test_logger.info('\n Begin Model Evaluation (testing).')
+    
     for index, data in enumerate(tbar):
         image_A, image_B, label = data
-        image_id = get_imgid_list(Dataset_Path=args.Dataset_Path, split=config['val_loader']["split"], i=index)
+        image_id = get_imgid_list(Dataset_Path=config['test_loader']['data_dir'], split=config['test_loader']["split"], i=index)
         image_A = image_A.cuda()
         image_B = image_B.cuda()
         label   = label.cuda()
         
         #PREDICT
         with torch.no_grad():
-            output = multi_scale_predict(model, image_A, image_B, scales, num_classes)
-            # output = model(image_A, image_B)
+            # output = multi_scale_predict(model, image_A, image_B, scales, num_classes)
+            output = model(image_A, image_B)
         _update_metric(output, label, sup_running_metric)
-        prediction = np.asarray(np.argmax(output, axis=0), dtype=np.uint8)
-        _update_metric(output)
+        prediction = np.asarray(torch.argmax(output, 1).cpu().numpy(), dtype=np.uint8)[0]
+        
         #Calculate metrics
-        output = torch.from_numpy(output).cuda()
-        label[label>=1] = 1
-        output = torch.unsqueeze(output, 0)
-        label  = torch.unsqueeze(label, 0)
-        correct, labeled, inter, union  = eval_metrics(output, label, num_classes)
-        total_inter, total_union        = total_inter+inter, total_union+union
-        total_correct, total_label      = total_correct+correct, total_label+labeled
-        pixAcc = 1.0 * total_correct / (np.spacing(1) + total_label)
-        IoU = 1.0 * total_inter / (np.spacing(1) + total_union)
-        tbar.set_description('Test Results | PixelAcc: {:.4f}, IoU(no-change): {:.4f}, IoU(change): {:.4f} |'.format(pixAcc, IoU[0], IoU[1]))
+        # output = output.cuda()
+        # label[label>=1] = 1
+        # output = torch.unsqueeze(output, 0)
+        # label  = torch.unsqueeze(label, 0)
+        # correct, labeled, inter, union  = eval_metrics(output, label, num_classes)
+        # total_inter, total_union        = total_inter+inter, total_union+union
+        # total_correct, total_label      = total_correct+correct, total_label+labeled
+        # pixAcc = 1.0 * total_correct / (np.spacing(1) + total_label)
+        # IoU = 1.0 * total_inter / (np.spacing(1) + total_union)
+        # tbar.set_description('Test Results | PixelAcc: {:.4f}, IoU(no-change): {:.4f}, IoU(change): {:.4f} |'.format(pixAcc, IoU[0], IoU[1]))
 
         #SAVE RESULTS
         prediction_im = colorize_mask(prediction, palette)
-        prediction_im.save('/media/lidan/ssd2/SemiCD/outputs/'+config["experim_name"]+'/'+image_id+'.png')
+        
+        prediction_im.save(os.path.join(imgs_dir,image_id+'.png'))
     
     #Printing average metrics on test-data
-    pixAcc = 1.0 * total_correct / (np.spacing(1) + total_label)
-    IoU = 1.0 * total_inter / (np.spacing(1) + total_union)
-    mIoU = IoU.mean()
-    seg_metrics = {"Pixel_Accuracy": np.round(pixAcc, 3), "Mean_IoU": np.round(mIoU, 3),
-                                "Class_IoU": dict(zip(range(num_classes), np.round(IoU, 3)))}
-    log = {     
-                'val_loss': 0.0,
-                **seg_metrics
-            }
-    log = _collect_epoch_states(log, sup_running_metric)
-    html_results.add_results(epoch=1, seg_resuts=log)
+    # pixAcc = 1.0 * total_correct / (np.spacing(1) + total_label)
+    # IoU = 1.0 * total_inter / (np.spacing(1) + total_union)
+    # mIoU = IoU.mean()
+    # seg_metrics = {"Pixel_Accuracy": np.round(pixAcc, 5), "Mean_IoU": np.round(mIoU, 5),
+    #                             "Class_IoU": dict(zip(range(num_classes), np.round(IoU, 5)))}
+    logs = { }
+    logs = _collect_epoch_states(logs, sup_running_metric)
+    logs['Mean_IoU'] = logs['sup_miou']
+    logs['Pixel_Accuracy'] = logs['sup_epoch_acc']
+    html_results.add_results(epoch=1, seg_resuts=logs)
     html_results.save()
+    message = '[Test CD summary)]: mF1=%.5f \n' %\
+                      (logs['sup_epoch_acc'])
+    for k, v in logs.items():
+        message += '{:s}: {:.4e} '.format(k, v) 
+    message += '\n'
+    test_logger.info(message)
+    test_logger.info('End of testing...')
+    
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='PyTorch Training')
-    parser.add_argument('--config', default='/media/lidan/ssd2/SemiCD/saved/LEVIR-CD/Supervised/SemiCD_(sup)_40/config.json',type=str,
+    parser.add_argument('-c', '--config', default='/media/lidan/ssd2/SemiCD/saved/LEVIR-CD/Supervised/SemiCD_(sup)_40/config.json',type=str,
                         help='Path to the config file')
-    parser.add_argument( '--model', default='/media/lidan/ssd2/SemiCD/saved/LEVIR-CD/Supervised/SemiCD_(sup)_40/best_model.pth', type=str,
-                        help='Path to the trained .pth model')
-    parser.add_argument( '--save', action='store_true', help='Save images')
-    parser.add_argument('--Dataset_Path', default="/media/lidan/ssd2/CDData/WHU-CD-256", type=str,
-                        help='Path to dataset LEVIR-CD')
+    # parser.add_argument( 'm','--model', default='/media/lidan/ssd2/SemiCD/saved/LEVIR-CD/Supervised/SemiCD_(sup)_40/best_model.pth', type=str,
+    #                     help='Path to the trained .pth model')
+    parser.add_argument( '-s', '--save', action='store_true', help='Save images')
+    # parser.add_argument('-d', '--Dataset_Path', default="/data/datasets/LEVIR-CD/", type=str,
+    #                     help='Path to dataset LEVIR-CD')
     args = parser.parse_args()
     return args
 

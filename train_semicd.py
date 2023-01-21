@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import argparse
@@ -5,7 +6,7 @@ import torch
 import dataloaders
 import models
 import math
-from utils import Logger
+from utils import Logger, setup_logger
 from utils.wandb_logger import WandbLogger
 from trainer import Trainer
 import torch.nn.functional as F
@@ -18,7 +19,6 @@ def get_instance(module, name, config, *args):
 
 def main(config, resume):
     torch.manual_seed(42)
-    train_logger = Logger()
     
     if config['enable_wandb']:
         import wandb
@@ -77,7 +77,7 @@ def main(config, resume):
         unsupervised_loader=unsupervised_loader,
         val_loader=val_loader,
         iter_per_epoch=iter_per_epoch,
-        train_logger=train_logger,
+        # train_logger=train_logger,
         wandb_logger=wandb_logger)
 
     trainer.train()
@@ -98,4 +98,5 @@ if __name__=='__main__':
     config = json.load(open(args.config))
     config['enable_wandb'] = args.enable_wandb
     torch.backends.cudnn.benchmark = True
-    main(config, args.resume)
+    resume = config["resume_path"]
+    main(config, resume)
