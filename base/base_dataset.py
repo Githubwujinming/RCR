@@ -12,7 +12,7 @@ from math import ceil
 class BaseDataSet(Dataset):
     def __init__(self, data_dir, split, mean, std, base_size=None, augment=True, val=False,
                 jitter=False, use_weak_lables=False, weak_labels_output=None, crop_size=None, scale=False, flip=False, rotate=False,
-                blur=False, return_id=False, percnt_lbl=None):
+                blur=False, return_id=False, percnt_lbl=None,data_len=-1):
 
         self.root = data_dir
         self.split = split

@@ -26,8 +26,7 @@ class ImageDataset(BaseDataSet):
             file_list = os.path.join(self.root, 'list', f"{self.percnt_lbl}_{self.split}" + ".txt")
         else:
             raise ValueError(f"Invalid split name {self.split}")
-
-        img_name_list = np.loadtxt(file_list, dtype=np.str)
+        img_name_list = np.loadtxt(file_list, dtype=str)
         if img_name_list.ndim == 2:
             return img_name_list[:, 0]
         self.dataset_len = len(img_name_list)

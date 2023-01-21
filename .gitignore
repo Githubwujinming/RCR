@@ -6,3 +6,4 @@
 # information for Eclipse / Flash Builder.
 *.json
 configs/*
+experiments/*

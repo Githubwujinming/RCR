@@ -7,10 +7,10 @@ class AverageMeter(object):
     """Computes and stores the average and current value"""
     def __init__(self):
         self.initialized = False
-        self.val = None
-        self.avg = None
-        self.sum = None
-        self.count = None
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
 
     def initialize(self, val, weight):
         self.val = val

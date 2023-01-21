@@ -34,7 +34,7 @@ class Trainer(BaseTrainer):
             self.log_step = int(self.log_step / self.val_loader.batch_size) + 1
 
         self.num_classes = self.val_loader.dataset.num_classes
-        self.mode = self.model.module.mode
+        self.mode = self.model.mode
 
         # TRANSORMS FOR VISUALIZATION
         self.restore_transform = transforms.Compose([
@@ -132,8 +132,7 @@ class Trainer(BaseTrainer):
             if batch_idx % self.log_step == 0:
                 self.wrt_step = (epoch - 1) * len(self.unsupervised_loader) + batch_idx
                 self._write_scalars_tb(logs)
-
-            if batch_idx % int(len(self.unsupervised_loader)*0.9) == 0:
+            if batch_idx % max(1,int(len(self.unsupervised_loader)*0.9)) == 0:
                 self._write_img_tb(A_l, B_l, target_l, A_ul, B_ul, target_ul, outputs, epoch)
 
             del A_l, B_l, target_l, A_ul, B_ul, target_ul
@@ -148,7 +147,7 @@ class Trainer(BaseTrainer):
                 epoch, self.loss_sup.average, self.loss_unsup.average, self.loss_weakly.average,
                 self.pair_wise.average, self.class_iou_l[1], self.class_iou_ul[1]))
 
-            self.lr_scheduler.step(epoch=epoch-1)
+            self.lr_scheduler.step()
         
         logs = self._collect_epoch_states(logs)
         message = '[Training SemiCD (epoch summary)]: epoch: [%d/%d]. epoch_mF1_sup=%.5f,  epoch_mF1_unsup=%.5f \n' %\
@@ -369,7 +368,7 @@ class Trainer(BaseTrainer):
             if 'class_iou' not in k: self.writer.add_scalar(f'train/{k}', v, self.wrt_step)
         for i, opt_group in enumerate(self.optimizer.param_groups):
             self.writer.add_scalar(f'train/Learning_rate_{i}', opt_group['lr'], self.wrt_step)
-        current_rampup = self.model.module.unsup_loss_w.current_rampup
+        current_rampup = self.model.unsup_loss_w.current_rampup
         self.writer.add_scalar('train/Unsupervised_rampup', current_rampup, self.wrt_step)
 
 

@@ -31,8 +31,8 @@ class BaseTrainer:
         self.save_period = cfg_trainer['save_period']
 
         # OPTIMIZER
-        trainable_params = [{'params': filter(lambda p:p.requires_grad, self.model.module.get_other_params())},
-                            {'params': filter(lambda p:p.requires_grad, self.model.module.get_backbone_params()), 
+        trainable_params = [{'params': filter(lambda p:p.requires_grad, self.model.get_other_params())},
+                            {'params': filter(lambda p:p.requires_grad, self.model.get_backbone_params()), 
                             'lr': config['optimizer']['args']['lr'] / 10}]
 
         self.optimizer = get_instance(torch.optim, 'optimizer', config, trainable_params)
