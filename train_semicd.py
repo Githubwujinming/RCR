@@ -6,6 +6,7 @@ import dataloaders
 import models
 import math
 from utils import Logger
+from utils.wandb_logger import WandbLogger
 from trainer import Trainer
 import torch.nn.functional as F
 from utils.losses import abCE_loss, CE_loss, consistency_weight, FocalLoss, softmax_helper, get_alpha
@@ -18,6 +19,24 @@ def get_instance(module, name, config, *args):
 def main(config, resume):
     torch.manual_seed(42)
     train_logger = Logger()
+    
+    if config['enable_wandb']:
+        import wandb
+        print("Initializing wandblog.")
+        wandb_logger = WandbLogger(config)
+        # Training log
+        wandb.define_metric('epoch')
+        wandb.define_metric('training/train_step')
+        wandb.define_metric("training/*", step_metric="train_step")
+        # Validation log
+        wandb.define_metric('validation/val_step')
+        wandb.define_metric("validation/*", step_metric="val_step")
+        # Initialization
+        train_step = 0
+        val_step = 0
+    else:
+        wandb_logger = None
+
     
     # DATA LOADERS
     config['train_supervised']['percnt_lbl'] = config["sup_percent"]
@@ -58,7 +77,8 @@ def main(config, resume):
         unsupervised_loader=unsupervised_loader,
         val_loader=val_loader,
         iter_per_epoch=iter_per_epoch,
-        train_logger=train_logger)
+        train_logger=train_logger,
+        wandb_logger=wandb_logger)
 
     trainer.train()
 
@@ -72,8 +92,10 @@ if __name__=='__main__':
     parser.add_argument('-d', '--device', default=None, type=str,
                            help='indices of GPUs to enable (default: all)')
     parser.add_argument('--local', action='store_true', default=False)
+    parser.add_argument('-enable_wandb', action='store_true', default=False)
     args = parser.parse_args()
 
     config = json.load(open(args.config))
+    config['enable_wandb'] = args.enable_wandb
     torch.backends.cudnn.benchmark = True
     main(config, args.resume)
