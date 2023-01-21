@@ -13,7 +13,7 @@ import json
 class ImageDataset(BaseDataSet):
     def __init__(self, **kwargs):
         self.num_classes = 2
-
+        self.data_len = kwargs['data_len']
         self.palette = pallete.get_voc_pallete(self.num_classes)
         super(ImageDataset, self).__init__(**kwargs)
 
@@ -30,21 +30,28 @@ class ImageDataset(BaseDataSet):
         img_name_list = np.loadtxt(file_list, dtype=np.str)
         if img_name_list.ndim == 2:
             return img_name_list[:, 0]
-
-        self.files = img_name_list
+        self.dataset_len = len(img_name_list)
+        if self.data_len <= 0:
+            self.data_len = self.dataset_len
+        else:
+            self.data_len = min(self.data_len, self.dataset_len)
+        self.files = img_name_list[:self.data_len]
 
     def _load_data(self, index):
-        image_A_path    = os.path.join(self.root, 'A', self.files[index])
-        image_B_path    = os.path.join(self.root, 'B', self.files[index])
+        image_A_path    = os.path.join(self.root, 'A', self.files[index%self.data_len])
+        image_B_path    = os.path.join(self.root, 'B', self.files[index%self.data_len])
         image_A         = np.asarray(Image.open(image_A_path), dtype=np.float32)
         image_B         = np.asarray(Image.open(image_B_path), dtype=np.float32)
-        image_id        = self.files[index].split("/")[-1].split(".")[0]
+        image_id        = self.files[index%self.data_len].split("/")[-1].split(".")[0]
         if self.use_weak_lables:
             label_path  = os.path.join(self.weak_labels_output, image_id+".png")
         else:
-            label_path  = os.path.join(self.root, 'label', self.files[index])
+            label_path  = os.path.join(self.root, 'label', self.files[index%self.data_len])
         label = np.asarray(Image.open(label_path), dtype=np.int32)
         return image_A, image_B, label, image_id
+    
+    def __len__(self):
+        return self.data_len
 
 class CDDataset(BaseDataLoader):
     def __init__(self, kwargs):
