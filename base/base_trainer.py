@@ -21,8 +21,8 @@ class BaseTrainer:
         self.improved = False
 
         # SETTING THE DEVICE
-        self.device, availble_gpus = self._get_available_devices(self.config['n_gpu'])
-        self.model = torch.nn.DataParallel(self.model, device_ids=availble_gpus)
+        self.device, availble_gpus = self._get_available_devices(self.config['gpu_ids'])
+        # self.model = torch.nn.DataParallel(self.model, device_ids=availble_gpus)
         self.model.to(self.device)
 
         # CONFIGS
@@ -70,17 +70,19 @@ class BaseTrainer:
 
         if resume: self._resume_checkpoint(resume)
 
-    def _get_available_devices(self, n_gpu):
+    def _get_available_devices(self, gpu_ids):
         sys_gpu = torch.cuda.device_count()
+        n_gpu = len(gpu_ids)
         if sys_gpu == 0:
             self.logger.warning('No GPUs detected, using the CPU')
             n_gpu = 0
         elif n_gpu > sys_gpu:
             self.logger.warning(f'Nbr of GPU requested is {n_gpu} but only {sys_gpu} are available')
             n_gpu = sys_gpu
-            
-        device = torch.device('cuda:0' if n_gpu > 0 else 'cpu')
-        self.logger.info(f'Detected GPUs: {sys_gpu} Requested: {n_gpu}')
+        gpu_list = ','.join(str(x) for x in self.config['gpu_ids'])
+        os.environ['CUDA_VISIBLE_DEVICES'] = gpu_list
+        device = torch.device('cuda' if n_gpu > 0 else 'cpu')
+        # self.logger.info(f'Detected GPUs: {sys_gpu} Requested: {n_gpu}')
         available_gpus = list(range(n_gpu))
         return device, available_gpus
 

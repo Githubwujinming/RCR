@@ -107,7 +107,7 @@ def main():
     model = models.Consistency_ResNet50_CD(num_classes=num_classes, conf=config['model'], testing=True)
     print(f'\n{model}\n')
     checkpoint = torch.load(args.model)
-    model = torch.nn.DataParallel(model)
+    # model = torch.nn.DataParallel(model)
     try:
         print("Loading the state dictionery...")
         model.load_state_dict(checkpoint['state_dict'], strict=True)
