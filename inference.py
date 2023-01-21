@@ -59,13 +59,38 @@ def multi_scale_predict(model, image_A, image_B, scales, num_classes, flip=False
     total_predictions /= len(scales)
     return total_predictions[:, :H, :W]
 
+# Functions related to computing performance metrics for CD
+def _update_metric(pred_l, target_l, sup_running_metric):
+    """
+    update metric
+    """
+    Gl_pred = np.argmax(Gl_pred, dim=0)
+
+    sup_current_score = sup_running_metric.update_cm(pr=Gl_pred.cpu().numpy(), gt=target_l.detach().cpu().numpy())
+    
+    return sup_current_score
+    
+# Collect the status of the epoch
+def _collect_epoch_states(logs, sup_running_metric):
+    sup_scores = sup_running_metric.get_scores()
+    sup_epoch_acc = sup_scores['mf1']
+
+    logs['sup_epoch_acc'] = sup_epoch_acc.item()
+
+    for k, v in sup_scores.items():
+        logs['sup_'+k] = v
+            
+    return logs
+    
 def main():
     args = parse_arguments()
 
     # CONFIG
     assert args.config
     config = json.load(open(args.config))
-    scales = [1.0,1.25]
+    scales = [1.0]
+    num_classes = 2
+    sup_running_metric = metrics.ConfuseMatrixMeter(n_class=num_classes)
 
     # DATA LOADER
     config['val_loader']["batch_size"]  = 1
@@ -74,7 +99,6 @@ def main():
     config['val_loader']["shuffle"]     = False
     config['val_loader']['data_dir']    = args.Dataset_Path
     loader = dataloaders.CDDataset(config['val_loader'])
-    num_classes = 2
     palette     = get_voc_pallete(num_classes)
 
     # MODEL
@@ -116,9 +140,10 @@ def main():
         #PREDICT
         with torch.no_grad():
             output = multi_scale_predict(model, image_A, image_B, scales, num_classes)
-        
+            # output = model(image_A, image_B)
+        _update_metric(output, label, sup_running_metric)
         prediction = np.asarray(np.argmax(output, axis=0), dtype=np.uint8)
-
+        _update_metric(output)
         #Calculate metrics
         output = torch.from_numpy(output).cuda()
         label[label>=1] = 1
@@ -145,6 +170,7 @@ def main():
                 'val_loss': 0.0,
                 **seg_metrics
             }
+    log = _collect_epoch_states(log, sup_running_metric)
     html_results.add_results(epoch=1, seg_resuts=log)
     html_results.save()
 
