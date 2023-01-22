@@ -5,6 +5,7 @@ from scipy import ndimage
 import cv2
 import numpy as np
 import sys
+import PIL
 import json
 import models
 import dataloaders
@@ -83,7 +84,21 @@ def _collect_epoch_states(logs, sup_running_metric):
         logs['sup_'+k] = v
             
     return logs
-    
+
+def _get_available_devices(gpu_ids):
+    n_gpu = len(gpu_ids)
+    if n_gpu == 0:
+        return 'cpu'
+    gpu_list = ','.join(str(x) for x in gpu_ids)
+    os.environ['CUDA_VISIBLE_DEVICES'] = gpu_list
+    device = torch.device('cuda' if n_gpu > 0 else 'cpu')
+    return device
+
+model_dict = {
+    'cct': models.Consistency_ResNet50_CD,
+    'gan': models.SemiCDNet_TGRS21
+}
+
 def main():
     args = parse_arguments()
 
@@ -101,12 +116,12 @@ def main():
     # config['val_loader']["shuffle"]     = False
     # config['val_loader']['data_dir']    = args.Dataset_Path
     loader = dataloaders.CDDataset(config['test_loader'])
-    palette     = get_voc_pallete(num_classes)
+    # palette     = get_voc_pallete(num_classes)
 
     # MODEL
     config['model']['supervised'] = True
     config['model']['semi'] = False
-    model = models.Consistency_ResNet50_CD(num_classes=num_classes, conf=config['model'], testing=True)
+    model = model_dict[args.model](num_classes=num_classes, conf=config['model'], testing=True)
     print(f'\n{model}\n')
     assert config["resume_path"] is not None, "resume_path in config must not None"
         
@@ -118,8 +133,10 @@ def main():
     except Exception as e:
         print(f'Some modules are missing: {e}')
         model.load_state_dict(checkpoint['state_dict'], strict=False)
+        
+    device = _get_available_devices(config['gpu_ids'])
     model.eval()
-    model.cuda()
+    model.to(device)
 
     if args.save and not os.path.exists('outputs'):
         os.makedirs('outputs')
@@ -132,8 +149,8 @@ def main():
     dir_exists(imgs_dir)
     # LOOP OVER THE DATA
     tbar = tqdm(loader, ncols=100)
-    total_inter, total_union = 0, 0
-    total_correct, total_label = 0, 0
+    # total_inter, total_union = 0, 0
+    # total_correct, total_label = 0, 0
     setup_logger('test', os.path.join(config['trainer']['log_dir'], config['experim_name'], 'logs'),
                         'test', level=logging.INFO, screen=False)
     test_logger = logging.getLogger('test')
@@ -166,7 +183,9 @@ def main():
         # tbar.set_description('Test Results | PixelAcc: {:.4f}, IoU(no-change): {:.4f}, IoU(change): {:.4f} |'.format(pixAcc, IoU[0], IoU[1]))
 
         #SAVE RESULTS
-        prediction_im = colorize_mask(prediction, palette)
+        # prediction_im = colorize_mask(prediction, palette)# 这里变化区域标红
+        prediction = prediction * 255
+        prediction_im = PIL.Image.fromarray(prediction.astype(np.uint8)).convert('P')
         
         prediction_im.save(os.path.join(imgs_dir,image_id+'.png'))
     
@@ -193,10 +212,9 @@ def main():
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='PyTorch Training')
-    parser.add_argument('-c', '--config', default='/media/lidan/ssd2/SemiCD/saved/LEVIR-CD/Supervised/SemiCD_(sup)_40/config.json',type=str,
+    parser.add_argument('-c', '--config', default='configs/config_LEVIR_50.json',type=str,
                         help='Path to the config file')
-    # parser.add_argument( 'm','--model', default='/media/lidan/ssd2/SemiCD/saved/LEVIR-CD/Supervised/SemiCD_(sup)_40/best_model.pth', type=str,
-    #                     help='Path to the trained .pth model')
+    parser.add_argument( '-m','--model', default='cct', type=str,)
     parser.add_argument( '-s', '--save', action='store_true', help='Save images')
     # parser.add_argument('-d', '--Dataset_Path', default="/data/datasets/LEVIR-CD/", type=str,
     #                     help='Path to dataset LEVIR-CD')
