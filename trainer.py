@@ -212,7 +212,7 @@ class Trainer(BaseTrainer):
         total_inter, total_union = 0, 0
         total_correct, total_label = 0, 0
 
-        tbar = tqdm(self.val_loader, ncols=100)
+        tbar = tqdm(self.val_loader, ncols=150)
         with torch.no_grad():
             val_visual = []
             for batch_idx, (A, B, target) in enumerate(tbar):
