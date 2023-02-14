@@ -147,6 +147,7 @@ def main():
                             save_name=config['experim_name'], config=config)
     imgs_dir = os.path.join(config["trainer"]["save_dir"],config["experim_name"],'images')
     dir_exists(imgs_dir)
+    dir_exists(os.path.join(config['trainer']['log_dir'], config['experim_name'], 'logs'))
     # LOOP OVER THE DATA
     tbar = tqdm(loader, ncols=100)
     # total_inter, total_union = 0, 0
@@ -184,10 +185,23 @@ def main():
 
         #SAVE RESULTS
         # prediction_im = colorize_mask(prediction, palette)# 这里变化区域标红
-        prediction = prediction * 255
-        prediction_im = PIL.Image.fromarray(prediction.astype(np.uint8)).convert('P')
+        pred_L_show = torch.argmax(output, dim=1, keepdim=True).detach().cpu()
+        L = label.unsqueeze(0).detach().cpu()
+        tp = (L * pred_L_show)
+        fp = (pred_L_show - tp)
+        fn = L - tp
+        tp = tp.repeat(1,3,1,1).permute(0,2,3,1)
+        fp = fp.repeat(1,3,1,1).permute(0,2,3,1)
+        fn = fn.repeat(1,3,1,1).permute(0,2,3,1)
+        comp = torch.zeros_like(tp).float()
+        comp[tp[:,:,:,0]==1] = torch.tensor([255.0,255.0,255.0]) #white
+        comp[fp[:,:,:,0]==1] = torch.tensor([220.0,20.0,60.0])#red
+        comp[fn[:,:,:,0]==1] = torch.tensor([0.0,0.0,205.0])# blue
+        # comp = self.set_device(comp)
+        comp = comp.squeeze(0).numpy()
+        prediction_im = PIL.Image.fromarray(comp.astype(np.uint8)).convert('P')
         
-        prediction_im.save(os.path.join(imgs_dir,image_id+'.png'))
+        prediction_im.save(os.path.join(imgs_dir,image_id+'_comp.png'))
     
     #Printing average metrics on test-data
     # pixAcc = 1.0 * total_correct / (np.spacing(1) + total_label)
